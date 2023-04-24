@@ -7601,6 +7601,7 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
     if (arm_dc_feature(s, ARM_FEATURE_M)) {
         goto illegal_op;
     }
+
     cond = insn >> 28;
     if (cond == 0xf){
         /* In ARMv3 and v4 the NV condition is UNPREDICTABLE; we
@@ -9018,14 +9019,15 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
         case 0xf:
             /* swi */
             {target_ulong svc_imm = extract32(insn, 0, 24);
-            if(svc_imm == 0x4c4641) {
-                tmp = load_reg(s, 0);
-                tmp2 = load_reg(s, 1);
-                tmp3 = load_reg(s, 2);
+            /* AFL hypercall */
+            if(svc_imm == 0x41464c) { 
+                tmp = load_reg(s, 1);
+                tmp2 = load_reg(s, 2);
+                tmp3 = load_reg(s, 3);
                 gen_helper_aflCall32(tmp, cpu_env, tmp, tmp2, tmp3);
                 tcg_temp_free_i32(tmp3);
                 tcg_temp_free_i32(tmp2);
-                store_reg(s, 0, tmp);
+                store_reg(s, 3, tmp);
             } else {
                 gen_set_pc_im(s, s->pc);
                 s->svc_imm = svc_imm;
@@ -11474,7 +11476,7 @@ void restore_state_to_opc(CPUARMState *env, TranslationBlock *tb, int pc_pos)
 // XXX lots of shared code here could be factored out
 #include "afl.h"
 
-static target_ulong startForkserver(CPUArchState *env, target_ulong enableTicks)
+static target_ulong startForkserver(CPUARMState *env, target_ulong enableTicks)
 {
     //printf("pid %d: startForkServer\n", getpid()); fflush(stdout);
     if(afl_fork_child) {
@@ -11504,13 +11506,13 @@ static target_ulong startForkserver(CPUArchState *env, target_ulong enableTicks)
 }
 
 /* copy work into ptr[0..sz].  Assumes memory range is locked. */
-static target_ulong getWork(CPUArchState *env, target_ulong ptr, target_ulong sz)
+static target_ulong getWork(CPUARMState *env, target_ulong ptr, target_ulong sz)
 {
     target_ulong retsz;
     FILE *fp;
     unsigned char ch;
 
-    //printf("pid %d: getWork %lx %lx\n", getpid(), ptr, sz);fflush(stdout);
+    /*printf("pid %d: getWork %lx %lx\n", getpid(), ptr, sz);fflush(stdout);*/
     assert(aflStart == 0);
     fp = fopen(aflFile, "rb");
     if(!fp) {
@@ -11529,14 +11531,40 @@ static target_ulong getWork(CPUArchState *env, target_ulong ptr, target_ulong sz
     return retsz;
 }
 
-static target_ulong startWork(CPUArchState *env, target_ulong ptr)
+/* Get data about the kernel module: start addr, end addr, char device */
+static target_ulong getData(CPUARMState *env, target_ulong ptr, target_ulong sz)
+{
+    target_ulong retsz;
+    FILE *fp;
+    unsigned char ch;
+
+    /*printf("pid %d: getData %lx %lx\n", getpid(), ptr, sz);fflush(stdout);*/
+    assert(aflStart == 0);
+    fp = fopen(aflFile2, "rb");
+    if(!fp) {
+         perror(aflFile2);
+         return -1;
+    }
+    retsz = 0;
+    while(retsz < sz) {
+        if(fread(&ch, 1, 1, fp) == 0)
+            break;
+        cpu_stb_data(env, ptr, ch);
+        retsz ++;
+        ptr ++;
+    }
+    fclose(fp);
+    return retsz;
+}
+
+static target_ulong startWork(CPUARMState *env, target_ulong ptr)
 {
     target_ulong start, end;
 
-    //printf("pid %d: ptr %lx\n", getpid(), ptr);fflush(stdout);
+    /*printf("pid %d: ptr %lx\n", getpid(), ptr);fflush(stdout);*/
     start = cpu_ldq_data(env, ptr);
     end = cpu_ldq_data(env, ptr + 8);
-    //printf("pid %d: startWork %lx - %lx\n", getpid(), start, end);fflush(stdout);
+    /*printf("pid %d: startWork %lx - %lx\n", getpid(), start, end);fflush(stdout);*/
 
     afl_start_code = start;
     afl_end_code   = end;
@@ -11545,9 +11573,25 @@ static target_ulong startWork(CPUArchState *env, target_ulong ptr)
     return 0;
 }
 
+/* Trace kernel module addresses */
+static target_ulong start_module_trace(CPUARMState *env, target_ulong ptr)
+{
+    target_ulong start, end;
+
+    /*printf("pid %d: ptr %lx\n", getpid(), ptr);fflush(stdout);*/
+    start = cpu_ldq_data(env, ptr);
+    end = cpu_ldq_data(env, ptr + 8);
+    /*printf("pid %d: start_module_trace %lx - %lx\n", getpid(), start, end);fflush(stdout);*/
+
+    module_start = start;
+    module_end   = end;
+    trace_module = 1;
+    return 0;
+}
+
 static target_ulong doneWork(target_ulong val)
 {
-    //printf("pid %d: doneWork %lx\n", getpid(), val);fflush(stdout);
+    /*printf("pid %d: doneWork %lx\n", getpid(), val);fflush(stdout);*/
     assert(aflStart == 1);
 /* detecting logging as crashes hasnt been helpful and
    has occasionally been a problem.  We'll leave it to
@@ -11561,46 +11605,54 @@ static target_ulong doneWork(target_ulong val)
     exit(val); /* exit forkserver child */
 }
 
-uint32_t helper_aflCall32(CPUArchState *env, uint32_t code, uint32_t a0, uint32_t a1) {
+
+
+uint32_t helper_aflCall32(CPUARMState *env, uint32_t code, uint32_t a0, uint32_t a1) {
     return (uint32_t)helper_aflCall(env, code, a0, a1);
 }
 
-target_ulong helper_aflCall(CPUArchState *env, target_ulong code, target_ulong a0, target_ulong a1) {
+target_ulong helper_aflCall(CPUARMState *env, target_ulong code, target_ulong a0, target_ulong a1) {
     switch(code) {
     case 1: return (uint32_t)startForkserver(env, a0);
     case 2: return (uint32_t)getWork(env, a0, a1);
     case 3: return (uint32_t)startWork(env, a0);
     case 4: return (uint32_t)doneWork(a0);
+    case 5: return (uint32_t)getData(env,a0,a1);
+    case 6: return (uint32_t)start_module_trace(env,a0);
     default: return -1;
     }
 }
 
-void helper_aflInterceptLog(CPUArchState *env)
+//We now use this to intercept kernel Oopses
+
+void helper_aflInterceptLog(CPUARMState *env)
 {
     if(!aflStart)
         return;
-    aflGotLog = 1;
+    /*printf("Caught the DIE address...exiting\n"); fflush(stdout);*/
+    exit(34);
+    /*aflGotLog = 1;*/
 
-#ifdef NOTYET
-    static FILE *fp = NULL;
-    if(fp == NULL) {
-        fp = fopen("logstore.txt", "a");
-        if(fp) {
-            struct timeval tv;
-            gettimeofday(&tv, NULL);
-            fprintf(fp, "\n----\npid %d time %ld.%06ld\n", getpid(), (u_long)tv.tv_sec, (u_long)tv.tv_usec);
-        }
-    }
-    if(!fp) 
-        return;
+/*#ifdef NOTYET*/
+    /*static FILE *fp = NULL;*/
+    /*if(fp == NULL) {*/
+        /*fp = fopen("logstore.txt", "a");*/
+        /*if(fp) {*/
+            /*struct timeval tv;*/
+            /*gettimeofday(&tv, NULL);*/
+            /*fprintf(fp, "\n----\npid %d time %ld.%06ld\n", getpid(), (u_long)tv.tv_sec, (u_long)tv.tv_usec);*/
+        /*}*/
+    /*}*/
+    /*if(!fp) */
+        /*return;*/
 
-    target_ulong stack = env->regs[R_ESP];
-    //target_ulong level = env->regs[R_ESI]; // arg 2
-    target_ulong ptext = cpu_ldq_data(env, stack + 0x8); // arg7
-    target_ulong len   = cpu_ldq_data(env, stack + 0x10) & 0xffff; // arg8
-    const char *msg = peekStrZ(env, ptext, len);
-    fprintf(fp, "%s\n", msg);
-#endif
+    /*target_ulong stack = env->regs[R_ESP];*/
+    /*//target_ulong level = env->regs[R_ESI]; // arg 2*/
+    /*target_ulong ptext = cpu_ldq_data(env, stack + 0x8); // arg7*/
+    /*target_ulong len   = cpu_ldq_data(env, stack + 0x10) & 0xffff; // arg8*/
+    /*const char *msg = peekStrZ(env, ptext, len);*/
+    /*fprintf(fp, "%s\n", msg);*/
+/*#endif*/
 }
 
 void helper_aflInterceptPanic(void)

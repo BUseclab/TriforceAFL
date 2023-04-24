@@ -2670,6 +2670,20 @@ ETEXI
 
 DEF("aflFile", HAS_ARG, QEMU_OPTION_aflFile, \
     "-aflFile fname  AFL input sourced from fname\n", QEMU_ARCH_ALL)
+DEF("aflFile2", HAS_ARG, QEMU_OPTION_aflFile2, \
+    "-aflFile2 fname  Module data needed by the driver\n", QEMU_ARCH_ALL)
+DEF("moduleTraceFile", HAS_ARG, QEMU_OPTION_moduleTraceFile, \
+    "-moduleTraceFile fname  File to store the trace of module addresses\n", QEMU_ARCH_ALL)
+
+DEF("trace_module", HAS_ARG, QEMU_OPTION_trace_module, \
+"-trace_module bool  Initiate tracing of module addresses\n", QEMU_ARCH_ALL) 
+
+DEF("module_start_addr", HAS_ARG, QEMU_OPTION_module_start_address, \
+    "-module_start_addr hexaddr  Start address of kernel modules\n", QEMU_ARCH_ALL)
+DEF("module_end_addr", HAS_ARG, QEMU_OPTION_module_end_address, \
+    "-module_end_addr hexaddr  Start address of kernel modules\n", QEMU_ARCH_ALL)
+
+
 DEF("aflPanicAddr", HAS_ARG, QEMU_OPTION_aflPanicAddr, \
     "-aflPanicAddr hexaddr  Address of OS panic function\n", QEMU_ARCH_ALL)
 DEF("aflDmesgAddr", HAS_ARG, QEMU_OPTION_aflDmesgAddr, \

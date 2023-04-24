@@ -219,6 +219,7 @@ static inline tcg_target_ulong cpu_tb_exec(target_ulong pc, CPUState *cpu, uint8
     } else {
         /* we executed it, trace it */
         AFL_QEMU_CPU_SNIPPET2(env, pc);
+	NORMAL_QEMU_CPU_SNIPPET(pc);
     }
 
     if ((next_tb & TB_EXIT_MASK) == TB_EXIT_REQUESTED) {

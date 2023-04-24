@@ -32,7 +32,6 @@
 
 #include "trace-tcg.h"
 
-
 #define MIPS_DEBUG_DISAS 0
 //#define MIPS_DEBUG_SIGN_EXTENSIONS
 
@@ -247,7 +246,7 @@ enum {
     OPC_SPIM     = 0x0E | OPC_SPECIAL, /* unofficial */
     OPC_SYNC     = 0x0F | OPC_SPECIAL,
 
-    OPC_SPECIAL28_RESERVED = 0x28 | OPC_SPECIAL,
+    OPC_AFLCALL = 0x28 | OPC_SPECIAL,
     OPC_SPECIAL29_RESERVED = 0x29 | OPC_SPECIAL,
     OPC_SPECIAL39_RESERVED = 0x39 | OPC_SPECIAL,
     OPC_SPECIAL3D_RESERVED = 0x3D | OPC_SPECIAL,
@@ -1360,6 +1359,7 @@ static TCGv_i64 msa_wr_d[64];
 
 static uint32_t gen_opc_hflags[OPC_BUF_SIZE];
 static target_ulong gen_opc_btarget[OPC_BUF_SIZE];
+static void gen_aflBBlock(target_ulong pc);
 
 #include "exec/gen-icount.h"
 
@@ -16347,6 +16347,7 @@ static void decode_opc_special(CPUMIPSState *env, DisasContext *ctx)
     rt = (ctx->opcode >> 16) & 0x1f;
     rd = (ctx->opcode >> 11) & 0x1f;
     sa = (ctx->opcode >> 6) & 0x1f;
+    
 
     op1 = MASK_SPECIAL(ctx->opcode);
     switch (op1) {
@@ -16438,6 +16439,9 @@ static void decode_opc_special(CPUMIPSState *env, DisasContext *ctx)
     case OPC_SYSCALL:
         generate_exception(ctx, EXCP_SYSCALL);
         ctx->bstate = BS_STOP;
+        break;
+    case OPC_AFLCALL:
+        gen_helper_aflCall32(cpu_gpr[2],cpu_env,cpu_gpr[4],cpu_gpr[3],cpu_gpr[2]);
         break;
     case OPC_BREAK:
         generate_exception(ctx, EXCP_BREAK);
@@ -19122,6 +19126,7 @@ gen_intermediate_code_internal(MIPSCPU *cpu, TranslationBlock *tb,
 
     pc_start = tb->pc;
     next_page_start = (pc_start & TARGET_PAGE_MASK) + TARGET_PAGE_SIZE;
+    gen_aflBBlock(pc_start);
     ctx.pc = pc_start;
     ctx.saved_pc = -1;
     ctx.singlestep_enabled = cs->singlestep_enabled;
@@ -19657,4 +19662,202 @@ void restore_state_to_opc(CPUMIPSState *env, TranslationBlock *tb, int pc_pos)
         env->btarget = gen_opc_btarget[pc_pos];
         break;
     }
+}
+
+
+// XXX lots of shared code here could be factored out
+#include "afl.h"
+
+static target_ulong startForkserver(CPUArchState *env, target_ulong enableTicks)
+{
+    printf("pid %d: startForkServer\n", getpid()); fflush(stdout);
+    if(afl_fork_child) {
+        /*
+         * we've already started a fork server. perhaps a test case
+         * accidentally triggered startForkserver again.  Exit the
+         * test case without error.
+         */
+        exit(0);
+    }
+#ifdef CONFIG_USER_ONLY
+    /* we're running in the main thread, get right to it! */
+    afl_setup();
+    afl_forkserver(env);
+#else
+    /*
+     * we're running in a cpu thread. we'll exit the cpu thread
+     * and notify the iothread.  The iothread will run the forkserver
+     * and in the child will restart the cpu thread which will continue
+     * execution.
+     * N.B. We assume a single cpu here!
+     */
+    aflEnableTicks = enableTicks;
+    afl_wants_cpu_to_stop = 1;
+#endif
+    return 0;
+}
+
+/* copy work into ptr[0..sz].  Assumes memory range is locked. */
+static target_ulong getWork(CPUArchState *env, target_ulong ptr, target_ulong sz)
+{
+    target_ulong retsz;
+    FILE *fp;
+    unsigned char ch;
+
+    /*printf("pid %d: getWork 0x%x 0x%x\n", getpid(), ptr, sz); fflush(stdout);*/
+    assert(aflStart == 0);
+    fp = fopen(aflFile, "rb");
+
+    if(!fp) {
+        perror(aflFile);
+        return -1;
+    }
+    retsz = 0;
+    while(retsz < sz) {
+
+        if(fread(&ch, 1, 1, fp) == 0)
+            break;
+        cpu_stb_data(env, ptr, ch);
+        retsz ++;
+        ptr ++;
+    }
+    sz = retsz;
+    fclose(fp);
+    return retsz;
+}
+
+/* Get data about the kernel module: start addr, end addr, char device */
+static target_ulong getData(CPUArchState *env, target_ulong ptr, target_ulong sz)
+{
+    target_ulong retsz;
+    FILE *fp;
+    unsigned char ch;
+
+    /*printf("pid %d: getData 0x%x 0x%x\n", getpid(), ptr, sz); fflush(stdout);*/
+    assert(aflStart == 0);
+    fp = fopen(aflFile2, "rb");
+
+    if(!fp) {
+        perror(aflFile2);
+        return -1;
+    }
+    retsz = 0;
+    while(retsz < sz) {
+
+        if(fread(&ch, 1, 1, fp) == 0)
+            break;
+        cpu_stb_data(env, ptr, ch);
+        retsz ++;
+        ptr ++;
+    }
+    sz = retsz;
+    /*printf("In getData read %lu bytes\n", retsz); fflush(stdout);*/
+    fclose(fp);
+    return retsz;
+}
+
+static target_ulong startWork(CPUArchState *env, target_ulong ptr)
+{
+    target_ulong start, end;
+    /*printf("pid %d: ptr %lx\n", getpid(), ptr); fflush(stdout);*/
+    start = cpu_ldq_data(env, ptr);
+    end = cpu_ldq_data(env, ptr + 8);
+    /*printf("pid %d: startWork %lx - %lx\n", getpid(), start, end);*/
+    fflush(stdout);
+
+    afl_start_code = start;
+    afl_end_code   = end;
+    aflGotLog = 0;
+    aflStart = 1;
+    return 0;
+}
+
+static target_ulong doneWork(target_ulong val)
+{
+    /*printf("pid %d: doneWork %lx\n", getpid(), val); fflush(stdout);*/
+    assert(aflStart == 1);
+/* detecting logging as crashes hasnt been helpful and                                                                                   
+   has occasionally been a problem.  We'll leave it to                                                                                   
+   a post-analysis phase to look over dmesg output for
+   our corpus.                                                                                                                           
+ */
+#ifdef LETSNOT                                                                                                                           
+    if(aflGotLog)
+        exit(64 | val);
+#endif
+    exit(val); /* exit forkserver child */
+}
+
+/* Trace kernel module addresses */
+static target_ulong start_module_trace(CPUArchState *env, target_ulong ptr)
+{
+    target_ulong start, end;
+    /*printf("pid %d: ptr %lx\n", getpid(), ptr); fflush(stdout);*/
+    start = cpu_ldq_data(env, ptr);
+    end = cpu_ldq_data(env, ptr + 8);
+    /*printf("pid %d: start_module_trace %lx - %lx\n", getpid(), start, end);*/
+    fflush(stdout);
+
+    module_start = start;
+    module_end   = end;
+    trace_module = 1;
+	  
+    return 0;
+}
+
+uint32_t helper_aflCall32(CPUArchState *env, uint32_t code, uint32_t a0, uint32_t a1) {
+   uint32_t ret = (uint32_t)helper_aflCall(env, code, a0, a1);
+   return ret;
+}
+
+target_ulong helper_aflCall(CPUArchState *env, target_ulong code, target_ulong a0, target_ulong a1) {
+    switch(code) {
+    case 1: return (uint32_t)startForkserver(env, a0);
+    case 2: return (uint32_t)getWork(env, a0, a1);
+    case 3: return (uint32_t)startWork(env, a0);
+    case 4: return (uint32_t)doneWork(a0);
+    case 5: return (uint32_t)getData(env, a0, a1);
+    case 6: return (uint32_t)start_module_trace(env,a0);
+    default: return -1;
+    }
+}
+
+static const char *
+peekStrZ(CPUArchState *env, target_ulong ptr, int maxlen)
+{
+    static char buf[0x1000];
+    int i;
+    if(maxlen > sizeof buf - 1)
+        maxlen = sizeof buf - 1;
+    for(i = 0; i < maxlen; i++) {
+        char ch = cpu_ldub_data(env, ptr + i);
+        if(!ch)
+            break;
+        buf[i] = ch;
+    }
+    buf[i] = 0;
+    return buf;
+}
+
+void helper_aflInterceptLog(CPUArchState *env)
+{
+    if(!aflStart)
+        return;
+    /*printf("Caught the DIE address...exiting\n"); fflush(stdout);*/
+    exit(32);
+}
+
+void helper_aflInterceptPanic(void)
+{
+    if(!aflStart)
+	    return;
+    exit(32);
+} 
+
+void gen_aflBBlock(target_ulong pc)
+{
+    if(pc == aflPanicAddr)
+        gen_helper_aflInterceptPanic();
+    if(pc == aflDmesgAddr)
+        gen_helper_aflInterceptLog(cpu_env);
 }

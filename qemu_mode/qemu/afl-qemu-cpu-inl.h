@@ -29,7 +29,10 @@
 #include <sys/shm.h>
 #include "afl.h"
 #include "../../config.h"
-
+#include "net/net.h"
+#include "net/slirp.h"
+#include "qemu/config-file.h"
+#include "qapi/qmp/qerror.h"
 /***************************
  * VARIOUS AUXILIARY STUFF *
  ***************************/
@@ -38,6 +41,7 @@
    we have hit a new block that hasn't been translated yet, and to tell
    it to translate within its own context, too (this avoids translation
    overhead in the next forked-off copy). */
+
 
 #define AFL_QEMU_CPU_SNIPPET1 do { \
     afl_request_tsl(pc, cs_base, flags); \
@@ -56,11 +60,15 @@
     afl_maybe_log(pc); \
   } while (0)
 
+#define NORMAL_QEMU_CPU_SNIPPET(pc) do { \
+    if(trace_module == 1){\
+        trace_module_instr(pc); \
+    }\
+  } while (0)
 /* We use one additional file descriptor to relay "needs translation"
    messages between the child and the fork server. */
 
 #define TSL_FD (FORKSRV_FD - 1)
-
 /* This is equivalent to afl-as.h: */
 
 static unsigned char *afl_area_ptr = 0;
@@ -75,10 +83,17 @@ int aflStart = 0;               /* we've started fuzzing */
 int aflEnableTicks = 0;         /* re-enable ticks for each test */
 int aflGotLog = 0;              /* we've seen dmesg logging */
 
+unsigned long trace_module;          /* Trace code in kernel modules (Unrelated to afl) */
+unsigned long module_start = 0, module_end = 0; /* Similar to afl_start_code and afl_end_code but irrelevant to the fuzzer */
+
+
 /* from command line options */
-const char *aflFile = "/tmp/work";
+const char *aflFile = "/tmp/work" ;
+const char *aflFile2 = "/tmp/data" ;
+const char *moduleTraceFile = "/tmp/module_trace";
+
 unsigned long aflPanicAddr = (unsigned long)-1;
-unsigned long aflDmesgAddr = (unsigned long)-1;
+unsigned long aflDmesgAddr = (unsigned long)-1; /* We use this as the address for kernel's "die" function*/
 
 /* Set in the child process in forkserver mode: */
 
@@ -96,6 +111,7 @@ static inline void afl_maybe_log(target_ulong);
 
 static void afl_wait_tsl(CPUArchState*, int);
 static void afl_request_tsl(target_ulong, target_ulong, uint64_t);
+
 
 static TranslationBlock *tb_find_slow(CPUArchState*, target_ulong,
                                       target_ulong, uint64_t);
@@ -147,8 +163,6 @@ void afl_setup(void) {
        so that the parent doesn't give up on us. */
 
     if (inst_r) afl_area_ptr[0] = 1;
-
-
   }
 
   if (getenv("AFL_INST_LIBS")) {
@@ -173,14 +187,15 @@ static ssize_t uninterrupted_read(int fd, void *buf, size_t cnt)
 void afl_forkserver(CPUArchState *env) {
 
   static unsigned char tmp[4];
-
   if (!afl_area_ptr) return;
 
   /* Tell the parent that we're alive. If the parent doesn't want
      to talk, assume that we're not running in forkserver mode. */
 
-  if (write(FORKSRV_FD + 1, tmp, 4) != 4) return;
-
+  if (write(FORKSRV_FD + 1, tmp, 4) != 4) {
+	  return;
+  }
+   
   afl_forksrv_pid = getpid();
 
   /* All right, let's await orders... */
@@ -214,7 +229,6 @@ void afl_forkserver(CPUArchState *env) {
       return;
 
     }
-
     /* Parent. */
 
     close(TSL_FD);
@@ -226,7 +240,6 @@ void afl_forkserver(CPUArchState *env) {
     afl_wait_tsl(env, t_fd[0]);
 
     /* Get and relay exit status to parent. */
-
     if (waitpid(child_pid, &status, 0) < 0) exit(6);
     if (write(FORKSRV_FD + 1, &status, 4) != 4) exit(7);
 
@@ -244,13 +257,6 @@ static inline target_ulong aflHash(target_ulong cur_loc)
 
   if (cur_loc > afl_end_code || cur_loc < afl_start_code || !afl_area_ptr)
     return 0;
-
-#ifdef DEBUG_EDGES
-  if(1) {
-    printf("exec %lx\n", cur_loc);
-    fflush(stdout);
-  }
-#endif
 
   /* Looks like QEMU always maps to fixed locations, so ASAN is not a
      concern. Phew. But instruction addresses may be aligned. Let's mangle
@@ -323,6 +329,7 @@ static void afl_request_tsl(target_ulong pc, target_ulong cb, uint64_t flags) {
 
 static void afl_wait_tsl(CPUArchState *env, int fd) {
 
+  //FILE *fp;
   struct afl_tsl t;
 
   while (1) {
@@ -342,20 +349,35 @@ static void afl_wait_tsl(CPUArchState *env, int fd) {
         so we will only JIT kernel code segment which shouldnt page.
         */
         // XXX this monstrosity must go!
-        if(t.pc >= 0xffffffff81000000 && t.pc <= 0xffffffff81ffffff) {
-            //printf("wait_tsl %lx -- jit\n", t.pc); fflush(stdout);
+        if(t.pc >= 0x80000000 && t.pc <= 0x81ffffff) {
+            //fprintf(fp,"wait_tsl %lx -- jit\n", t.pc); fflush(stdout);
             tb_find_slow(env, t.pc, t.cs_base, t.flags);
         } else {
-            //printf("wait_tsl %lx -- ignore nonkernel\n", t.pc); fflush(stdout);
+   //         fprintf(fp,"wait_tsl %lx -- ignore nonkernel\n", t.pc); fflush(stdout);
         }
 #endif
     } else {
-        //printf("wait_tsl %lx -- ignore\n", t.pc); fflush(stdout);
+     //   fprintf(fp,"wait_tsl %lx -- ignore\n", t.pc); fflush(stdout);
     }
 
   }
-
+  //fclose(fp);
   close(fd);
 
 }
 
+static inline target_ulong trace_module_instr(target_ulong cur_loc)
+{
+
+
+  if (cur_loc > module_end || cur_loc < module_start)
+    return 0;
+
+  FILE *fp;
+
+  fp = fopen(moduleTraceFile,"a");
+
+  fprintf(fp,"Module Instruction: 0x%x\n",(unsigned int)cur_loc);
+
+  fclose(fp);
+}

@@ -126,8 +126,13 @@ int main(int argc, char **argv)
 #define MAX_SCLP_CONSOLES 1
 
 extern const char *aflFile;
+extern const char *aflFile2;
+extern const char *moduleTraceFile;
 extern unsigned long aflPanicAddr;
 extern unsigned long aflDmesgAddr;
+extern unsigned long module_start;
+extern unsigned long module_end;
+extern unsigned long trace_module;
 
 static const char *data_dir[16];
 static int data_dir_idx;
@@ -3028,6 +3033,22 @@ int main(int argc, char **argv, char **envp)
                 break;
             case QEMU_OPTION_aflFile:
                 aflFile = (char *)optarg;
+                break;
+            case QEMU_OPTION_aflFile2:
+                aflFile2 = (char *)optarg;
+                break;
+            case QEMU_OPTION_moduleTraceFile:
+                moduleTraceFile = (char *)optarg;
+                break;
+            case QEMU_OPTION_trace_module:
+                trace_module = strtoul(optarg,NULL,10);
+		printf("TRACE_MODULE is %d\n",trace_module);
+                break;
+            case QEMU_OPTION_module_start_address:
+                module_start = strtoul(optarg,NULL,16);
+                break;
+            case QEMU_OPTION_module_end_address:
+                module_end = strtoul(optarg,NULL,16);
                 break;
             case QEMU_OPTION_aflPanicAddr:
                 aflPanicAddr = strtoul(optarg, NULL, 16);

@@ -36,11 +36,11 @@
 
 /* Default timeout for fuzzed code (milliseconds): */
 
-#define EXEC_TIMEOUT        1000
+#define EXEC_TIMEOUT        2000
 
 /* Timeout rounding factor when auto-scaling (milliseconds): */
 
-#define EXEC_TM_ROUND       20
+#define EXEC_TM_ROUND       30
 
 /* Default memory limit for child process (MB): */
 
@@ -52,7 +52,7 @@
 
 /* Default memory limit when running in QEMU mode (MB): */
 
-#define MEM_LIMIT_QEMU      2048
+#define MEM_LIMIT_QEMU      4096
 
 /* Number of calibration cycles per every new test case (and for test
    cases that show variable behavior): */
@@ -307,7 +307,7 @@
    problems with complex programs). You need to recompile the target binary
    after changing this - otherwise, SEGVs may ensue. */
 
-#define MAP_SIZE_POW2       21
+#define MAP_SIZE_POW2       18
 #define MAP_SIZE            (1 << MAP_SIZE_POW2)
 
 /* Maximum allocator request size (keep well under INT_MAX): */

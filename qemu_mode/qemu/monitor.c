@@ -4073,7 +4073,7 @@ static const mon_cmd_t *monitor_parse_command(Monitor *mon,
                        cmdname);
         goto fail;
     }
-
+    fflush(stdout);
     return cmd;
 
 fail:
@@ -4129,6 +4129,7 @@ static void handle_user_command(Monitor *mon, const char *cmdline)
     } else {
         cmd->mhandler.cmd(mon, qdict);
     }
+    
 
 out:
     QDECREF(qdict);

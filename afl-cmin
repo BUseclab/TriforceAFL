@@ -34,7 +34,8 @@
 #
 # This script must use bash because other shells may have hardcoded limits on
 # array sizes.
-#
+
+#set -x
 
 echo "corpus minimization tool for afl-fuzz by <lcamtuf@google.com>"
 echo
@@ -45,7 +46,7 @@ echo
 
 # Process command-line options...
 
-MEM_LIMIT=100
+MEM_LIMIT=4000
 TIMEOUT=none
 
 unset IN_DIR OUT_DIR STDIN_FILE EXTRA_PAR MEM_LIMIT_GIVEN \

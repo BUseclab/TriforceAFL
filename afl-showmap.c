@@ -669,11 +669,11 @@ static char** get_qemu_argv(int qemu_mode, u8* own_loc, char** argv, int argc) {
     if(qemu_mode == 1)
       cp = alloc_printf("%s/afl-qemu-trace", tmp);
     else
-      cp = alloc_printf("%s/afl-qemu-system-trace", tmp);
+      cp = alloc_printf("%s/%s", tmp,argv[0]);
 
     if (access(cp, X_OK))
       FATAL("Unable to find '%s'", tmp);
-
+	
     target_path = new_argv[0] = cp;
     return new_argv;
 
@@ -689,7 +689,7 @@ static char** get_qemu_argv(int qemu_mode, u8* own_loc, char** argv, int argc) {
     if(qemu_mode == 1)
       cp = alloc_printf("%s/afl-qemu-trace", own_copy);
     else
-      cp = alloc_printf("%s/afl-qemu-system-trace", own_copy);
+      cp = alloc_printf("%s/%s", own_copy,argv[0]);
     ck_free(own_copy);
 
     if (!access(cp, X_OK)) {
@@ -707,9 +707,11 @@ static char** get_qemu_argv(int qemu_mode, u8* own_loc, char** argv, int argc) {
     return new_argv;
 
   }
-  if (qemu_mode > 1 && !access(BIN_PATH "/afl-qemu-system-trace", X_OK)) {
+ 
+  cp = alloc_printf("%s/%s", BIN_PATH, argv[0]);
+  if (qemu_mode > 1 && !access(cp, X_OK)) {
 
-    target_path = new_argv[0] = BIN_PATH "/afl-qemu-system-trace";
+    target_path = new_argv[0] = cp;
     return new_argv;
 
   }

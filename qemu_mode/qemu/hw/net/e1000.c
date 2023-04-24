@@ -599,6 +599,7 @@ fcs_len(E1000State *s)
 static void
 e1000_send_packet(E1000State *s, const uint8_t *buf, int size)
 {
+ //   printf("Inside e1000_send_packet\n");
     NetClientState *nc = qemu_get_queue(s->nic);
     if (s->phy_reg[PHY_CTRL] & MII_CR_LOOPBACK) {
         nc->info->receive(nc, buf, size);
@@ -610,6 +611,7 @@ e1000_send_packet(E1000State *s, const uint8_t *buf, int size)
 static void
 xmit_seg(E1000State *s)
 {
+ //   printf("Inside xmit_seg\n");
     uint16_t len, *sp;
     unsigned int frames = s->tx.tso_frames, css, sofar, n;
     struct e1000_tx *tp = &s->tx;
@@ -786,6 +788,7 @@ static uint64_t tx_desc_base(E1000State *s)
 static void
 start_xmit(E1000State *s)
 {
+ //   printf("Inside start_xmit\n");
     PCIDevice *d = PCI_DEVICE(s);
     dma_addr_t base;
     struct e1000_tx_desc desc;
@@ -1176,6 +1179,7 @@ set_dlen(E1000State *s, int index, uint32_t val)
 static void
 set_tctl(E1000State *s, int index, uint32_t val)
 {
+ //   printf("Inside set_tctl\n");
     s->mac_reg[index] = val;
     s->mac_reg[TDT] &= 0xffff;
     start_xmit(s);
