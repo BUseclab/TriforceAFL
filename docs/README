@@ -1,3 +1,8 @@
+# FirmSolo - TriforceAFL
+
+This is a modified version of the TriforceAFL kernel fuzzer to support IOCTL fuzzing on IoT (ARM and MIPS) kernel modules.
+The fuzzer is specifically modified to be compatible with the FirmSolo re-hosting framework.
+
 <ProjectTriforce>
 
 New: For those looking to play with TriforceAFL and TLSF, Richard Johnson created a Dockerfile which installs both (and even builds a Linux kernel for you). It's available here <https://hub.docker.com/r/moflow/afl-triforce/tags/>.
